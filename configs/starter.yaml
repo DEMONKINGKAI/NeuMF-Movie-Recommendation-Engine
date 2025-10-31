@@ -1,0 +1,9 @@
+emb_dim_gmf: 32
+emb_dim_mlp: 64
+mlp_layers: [128, 64]
+lr: 0.001
+batch_size: 256
+epochs: 10
+neg_per_pos: 4
+K: 10
+min_rating: 4
