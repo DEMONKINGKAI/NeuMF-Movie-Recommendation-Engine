@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+ENV/
+env/
+
+# PyTorch
+*.pt
+*.pth
+
+# NumPy arrays (embeddings)
+*.npy
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data - only exclude non-essential files
+# Essential files to KEEP:
+#   ml-100k/u.data, ml-100k/u.item
+#   ml-25m/ratings.csv, ml-25m/movies.csv
+
+# MovieLens 100K - exclude non-essential files
+data/ml-100k/**/u*.base
+data/ml-100k/**/u*.test
+data/ml-100k/**/u.user
+data/ml-100k/**/u.genre
+data/ml-100k/**/u.occupation
+data/ml-100k/**/u.info
+data/ml-100k/**/README
+data/ml-100k/**/allbut.pl
+data/ml-100k/**/mku.sh
+
+# MovieLens 25M - exclude non-essential files
+data/ml-25m/**/genome-scores.csv
+data/ml-25m/**/genome-tags.csv
+data/ml-25m/**/links.csv
+data/ml-25m/**/tags.csv
+data/ml-25m/**/README.txt
+
+# Logs
+*.log
+logs/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+

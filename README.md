@@ -608,6 +608,8 @@ pip install -r backend/requirements.txt
 
 ### 3. Download Dataset
 
+**Important**: The data files are not included in the repository (they are too large for GitHub). You must download them using the provided script or manually from MovieLens.
+
 **Option 1: MovieLens 25M (Recommended - larger, more recent movies)**
 ```bash
 python scripts/download_mlwk.py --dataset 25m --target ./data/ml-25m
@@ -620,21 +622,25 @@ python scripts/download_mlwk.py --dataset 100k --target ./data/ml-100k
 
 **Note**: MovieLens 25M is ~250MB download and may take a few minutes. The system automatically detects the dataset format.
 
-Expected structure for 25M:
+**Essential Files Required:**
+
+For MovieLens 25M:
 ```
 data/ml-25m/ml-25m/
-  ├─ ratings.csv    (ratings: userId,movieId,rating,timestamp)
-  ├─ movies.csv      (movie metadata: movieId,title,genres)
-  └─ ... (other files)
+  ├─ ratings.csv    ✓ REQUIRED (ratings: userId,movieId,rating,timestamp)
+  ├─ movies.csv     ✓ REQUIRED (movie metadata: movieId,title,genres)
+  └─ ... (other files are optional and excluded from git)
 ```
 
-Expected structure for 100K:
+For MovieLens 100K:
 ```
 data/ml-100k/ml-100k/
-  ├─ u.data          (ratings)
-  ├─ u.item          (movie metadata)
-  └─ ... (other files)
+  ├─ u.data         ✓ REQUIRED (ratings)
+  ├─ u.item         ✓ REQUIRED (movie metadata with genres)
+  └─ ... (other files are optional and excluded from git)
 ```
+
+**What's Excluded**: The repository uses `.gitignore` to exclude non-essential files like pre-split test sets (`u1.base`, `u1.test`, etc.), documentation (`README`, `u.info`), additional metadata (`u.user`, `genome-tags.csv`), and scripts (`allbut.pl`). Only the essential rating and movie metadata files listed above are needed for both training and backend runtime.
 
 ### 4. Train the Model
 
@@ -826,9 +832,15 @@ NeuMF-Movie-Recommendation-Engine/
 │   ├── neumf_final.pt  # Trained model weights
 │   └── item_embeddings.npy  # Pre-computed embeddings [num_items, 384]
 │
-├── data/                # Dataset
-│   ├── ml-100k/        # MovieLens 100K data (optional)
-│   └── ml-25m/         # MovieLens 25M data (recommended)
+├── data/                # Dataset (not in repository - must download)
+│   ├── ml-100k/        # MovieLens 100K data (download via script)
+│   │   └── ml-100k/
+│   │       ├── u.data      ✓ Essential
+│   │       └── u.item      ✓ Essential
+│   └── ml-25m/         # MovieLens 25M data (download via script)
+│       └── ml-25m/
+│           ├── ratings.csv ✓ Essential
+│           └── movies.csv  ✓ Essential
 │
 ├── main.py             # CLI entry point for training
 ├── requirements.txt    # Python dependencies
@@ -872,7 +884,12 @@ NDCG ranges from 0 to 1, where 1 indicates perfect ranking.
 
 ## Troubleshooting
 
-- **Backend fails to find dataset**: Check `MOVIELENS_PATH` points to the directory containing either `ml-100k/` (for 100K) or `ml-25m/` (for 25M) subfolder, or `ratings.csv` in the root
+- **Backend fails to find dataset**: 
+  - Check `MOVIELENS_PATH` points to the directory containing either `ml-100k/` (for 100K) or `ml-25m/` (for 25M) subfolder, or `ratings.csv` in the root
+  - Ensure the essential files exist:
+    - **MovieLens 100K**: `ml-100k/u.data` and `ml-100k/u.item` must be present
+    - **MovieLens 25M**: `ml-25m/ratings.csv` and `ml-25m/movies.csv` must be present
+  - If you cloned the repo, remember to download the dataset using `scripts/download_mlwk.py` (data files are not in the repository)
 - **Backend fails to load model**: Ensure `MODEL_PATH` points to `checkpoints/neumf_final.pt` created after training. Check that hyperparameters in `configs/starter.yaml` match training configuration.
 - **NLP intent system not working**: Ensure `item_embeddings.npy` exists (run `build_item_embeddings.py` first). Check that embedding shape matches number of items in dataset.
 - **CORS errors**: Confirm backend runs on `http://localhost:8000` and frontend on `http://localhost:5173`
