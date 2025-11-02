@@ -9,7 +9,7 @@ ML_100K_GENRES = [
 ]
 
 def load_titles_and_genres(uitem_path):
-    """Returns {item_idx: {mlid, title, genres_onehot, genres}}."""
+    """Returns {item_idx: {mlid, title, genres_onehot, genres}} for MovieLens 100K format."""
     df = pd.read_csv(uitem_path, sep='|', header=None, encoding='latin-1',
         names=["movie_id","title","release","v","url"]+ML_100K_GENRES)
     item_meta = {}
@@ -20,6 +20,24 @@ def load_titles_and_genres(uitem_path):
         genres = [g for g, v in zip(ML_100K_GENRES, genres_onehot) if v]
         item_meta[mlid] = {
             "movie_id": mlid, "title": title, "genres_onehot": genres_onehot, "genres": genres
+        }
+    return item_meta
+
+def load_titles_and_genres_25m(movies_path):
+    """Returns {item_idx: {mlid, title, genres}} for MovieLens 25M format."""
+    df = pd.read_csv(movies_path)
+    item_meta = {}
+    for _, row in df.iterrows():
+        mlid = int(row['movieId'])
+        title = str(row['title'])
+        # Genres are pipe-separated, e.g., "Action|Adventure|Sci-Fi" or "(no genres listed)"
+        genre_str = str(row['genres']).strip()
+        if genre_str == '(no genres listed)' or genre_str == 'nan' or pd.isna(genre_str):
+            genres = []
+        else:
+            genres = [g.strip() for g in genre_str.split('|') if g.strip()]
+        item_meta[mlid] = {
+            "movie_id": mlid, "title": title, "genres": genres
         }
     return item_meta
 

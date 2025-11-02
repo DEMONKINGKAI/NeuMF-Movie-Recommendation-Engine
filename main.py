@@ -9,10 +9,11 @@ from recsys.eval import evaluate_model
 
 def main():
     parser = argparse.ArgumentParser(description="Train & Evaluate NeuMF Genre Recommender")
-    parser.add_argument('--data', type=str, default='./data/ml-100k', help='Data directory (MovieLens 100K with ml-100k folder inside)')
+    parser.add_argument('--data', type=str, default='./data/ml-25m', help='Data directory (MovieLens 100K or 25M - will auto-detect format)')
     parser.add_argument('--config', type=str, default='./configs/starter.yaml', help='Config YAML file')
     parser.add_argument('--epochs', type=int, default=None, help='Override epochs in config')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device for torch (cpu or cuda)')
+    parser.add_argument('--max-ratings', type=int, default=None, help='Optional limit on number of ratings to sample for faster experiments')
     args = parser.parse_args()
     # Load config
     with open(args.config, 'r') as f:
@@ -32,6 +33,7 @@ def main():
         epochs=cfg['epochs'],
         neg_per_pos=cfg['neg_per_pos'],
         device=args.device,
+        max_ratings=args.max_ratings,
     )
     # Eval
     print("Evaluating on test set...")

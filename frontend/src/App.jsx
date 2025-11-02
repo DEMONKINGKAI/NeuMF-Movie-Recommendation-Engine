@@ -16,15 +16,50 @@ export default function App() {
   const [topK, setTopK] = useState(10);
   const [recs, setRecs] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [initializing, setInitializing] = useState(true);
   const titleRef = useRef(null);
   const cardRef = useRef(null);
 
   useEffect(() => {
-    getGenres().then(setGenres);
-    getUsers().then(us => {
-      setUsers(us);
-      if(us.length > 0) setSelectedUser(us[0]);
+    let mounted = true;
+    setInitializing(true);
+    
+    Promise.all([
+      getGenres()
+        .then(data => {
+          console.log('Genres loaded:', data);
+          if (mounted) setGenres(data || []);
+          return data;
+        })
+        .catch(err => {
+          console.error('Failed to load genres:', err);
+          if (mounted) setGenres([]);
+          return [];
+        }),
+      getUsers()
+        .then(us => {
+          console.log('Users loaded:', us);
+          if (mounted && us && us.length > 0) {
+            setUsers(us);
+            setSelectedUser(us[0]);
+          } else {
+            console.warn('No users found');
+            if (mounted) setUsers([]);
+          }
+          return us;
+        })
+        .catch(err => {
+          console.error('Failed to load users:', err);
+          if (mounted) setUsers([]);
+          return [];
+        })
+    ]).finally(() => {
+      if (mounted) {
+        setInitializing(false);
+      }
     });
+    
+    return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
@@ -36,11 +71,31 @@ export default function App() {
   useEffect(() => {
     if (!selectedUser || !selectedGenre) return;
     setLoading(true);
-    getRecommendations(selectedUser, selectedGenre, topK, strict).then((r) => {
-      setRecs(r);
-      setLoading(false);
-    });
+    getRecommendations(selectedUser, selectedGenre, topK, strict)
+      .then((r) => {
+        console.log('Recommendations received:', r);
+        setRecs(r || []);
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error('Failed to load recommendations:', err);
+        setRecs([]);
+        setLoading(false);
+      });
   }, [selectedUser, selectedGenre, topK, strict]);
+
+  if (initializing) {
+    return (
+      <div className="app-shell">
+        <h1 ref={titleRef} className="title">NeuMF Movie Recommendations</h1>
+        <div className="subtitle">Loading genres and users...</div>
+        <div style={{ padding: '2rem', textAlign: 'center' }}>
+          <div className="loader" />
+          <p>Connecting to backend...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -49,10 +104,14 @@ export default function App() {
       <div ref={cardRef} className="control-card">
         <div className="control">
           <span className="label">User</span>
-          <select className="select" value={selectedUser} onChange={e => setSelectedUser(e.target.value)}>
-            {users.map(u => (
-              <option key={u} value={u}>{u}</option>
-            ))}
+          <select className="select" value={selectedUser} onChange={e => setSelectedUser(e.target.value)} disabled={users.length === 0}>
+            {users.length === 0 ? (
+              <option>No users available</option>
+            ) : (
+              users.map(u => (
+                <option key={u} value={u}>{u}</option>
+              ))
+            )}
           </select>
         </div>
         <div className="control">

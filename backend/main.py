@@ -12,27 +12,32 @@ if PROJECT_ROOT not in sys.path:
 
 from recsys.model import NeuMF
 from recsys.data import build_dataset
-from backend.utils import ML_100K_GENRES, load_titles_and_genres
+from backend.utils import ML_100K_GENRES, load_titles_and_genres, load_titles_and_genres_25m
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from difflib import get_close_matches
+import yaml
 
  
 
 # Resolve paths relative to the project root so running from backend works
-DEFAULT_DATA_DIR = os.path.join(PROJECT_ROOT, 'data', 'ml-100k')
+DEFAULT_DATA_DIR = os.path.join(PROJECT_ROOT, 'data', 'ml-25m')
 DATA_DIR = os.environ.get('MOVIELENS_PATH', DEFAULT_DATA_DIR)
 
 DEFAULT_MODEL_PATH = os.path.join(PROJECT_ROOT, 'checkpoints', 'neumf_final.pt')
 MODEL_PATH = os.environ.get('MODEL_PATH', DEFAULT_MODEL_PATH)
+
+# Config path for hyperparameters
+DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, 'configs', 'starter.yaml')
+CONFIG_PATH = os.environ.get('CONFIG_PATH', DEFAULT_CONFIG_PATH)
 
 # Embeddings
 DEFAULT_EMB_PATH = os.path.join(PROJECT_ROOT, 'checkpoints', 'item_embeddings.npy')
 EMB_PATH = os.environ.get('EMB_PATH', DEFAULT_EMB_PATH)
 EMB_MODEL_NAME = os.environ.get('EMB_MODEL_NAME', 'sentence-transformers/all-MiniLM-L6-v2')
 
-# Note: dataset layout is <DATA_DIR>/ml-100k/u.item
-UITEM_PATH = os.path.join(DATA_DIR, 'ml-100k', 'u.item')
+# Will detect dataset format after loading data
+# UITEM_PATH will be set based on detected format
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 TOP_K_DEFAULT = 10
 app = FastAPI()
@@ -57,15 +62,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Load config for hyperparameters
+try:
+    with open(CONFIG_PATH, 'r') as f:
+        cfg = yaml.safe_load(f)
+    logger.info(f"Loaded config from {CONFIG_PATH}")
+except Exception as e:
+    logger.warning(f"Failed to load config from {CONFIG_PATH}: {e}. Using defaults.")
+    cfg = {}
+
 # Load whole dataset, model, and movie meta at startup
 logger.info("Loading dataset and model...")
 data = build_dataset(DATA_DIR)
 num_users, num_items, genre_mat = data['num_users'], data['num_items'], data['genre_mat']
 item_invmap = {v:k for k, v in data['iid_map'].items()}
 user_invmap = {v:k for k, v in data['uid_map'].items()}
-meta = load_titles_and_genres(UITEM_PATH)
 
-model = NeuMF(num_users, num_items, genre_mat.shape[1])
+# Detect dataset format and set paths accordingly
+dataset_format = data['dataset_format']
+if dataset_format == '100k':
+    UITEM_PATH = os.path.join(DATA_DIR, 'ml-100k', 'u.item')
+    meta = load_titles_and_genres(UITEM_PATH)
+    ML_GENRES = ML_100K_GENRES
+else:
+    movies_path = os.path.join(DATA_DIR, 'ml-25m', 'movies.csv')
+    if not os.path.exists(movies_path):
+        movies_path = os.path.join(DATA_DIR, 'movies.csv')
+    UITEM_PATH = movies_path
+    meta = load_titles_and_genres_25m(UITEM_PATH)
+    ML_GENRES = data['genre_list']  # Use genres from dataset
+
+# Load embeddings to determine if intent tower should be used
+item_emb_for_model = None
+intent_dim = None
+if os.path.exists(EMB_PATH):
+    try:
+        item_emb_for_model = np.load(EMB_PATH)
+        if item_emb_for_model.shape[0] == num_items:
+            intent_dim = int(item_emb_for_model.shape[1])
+            logger.info(f"Intent dimension: {intent_dim}")
+        else:
+            logger.warning(f"Embeddings shape {item_emb_for_model.shape[0]} != num_items {num_items}; not using intent tower")
+    except Exception as e:
+        logger.warning(f"Failed to load embeddings for model: {e}")
+
+# Initialize model with the same hyperparameters as training
+model = NeuMF(
+    num_users, 
+    num_items, 
+    genre_mat.shape[1],
+    emb_dim_gmf=cfg.get('emb_dim_gmf', 32),
+    emb_dim_mlp=cfg.get('emb_dim_mlp', 64),
+    mlp_layers=tuple(cfg.get('mlp_layers', [128, 64])),
+    genre_proj_dim=cfg.get('genre_proj_dim', 16),
+    intent_dim=intent_dim,
+    intent_hidden=128,
+)
 try:
     state = torch.load(MODEL_PATH, map_location=DEVICE)
     # Filter incompatible keys (e.g., after adding intent tower or changing dims)
@@ -91,31 +143,24 @@ for arr_name in ['train_pos', 'val', 'test']:
 if item_pop.max() > 0:
     item_pop = item_pop / item_pop.max()
 
-# Load item embeddings if available
-item_emb = None
-if os.path.exists(EMB_PATH):
-    try:
-        item_emb = np.load(EMB_PATH)
-        if item_emb.shape[0] != num_items:
-            logger.warning(f"EMB count {item_emb.shape[0]} != num_items {num_items}; ignoring embeddings")
-            item_emb = None
-    except Exception as e:
-        logger.warning(f"Failed to load embeddings: {e}")
-else:
-    logger.info(f"No embeddings found at {EMB_PATH}; semantic retrieval disabled")
+# Use the embeddings loaded earlier for API purposes
+item_emb = item_emb_for_model
+if item_emb is None:
+    logger.info(f"No embeddings available; semantic retrieval disabled")
 
 # Build per-genre centroids for embedding-only intent mapping
 genre_centroids = None
 if 'item_emb' in globals() and item_emb is not None:
     try:
         # Collect internal item indices per genre
-        per_genre = {g: [] for g in ML_100K_GENRES}
+        per_genre = {g: [] for g in ML_GENRES}
         for internal_idx, mlid in item_invmap.items():
-            for g in meta[mlid]['genres']:
-                if g in per_genre:
-                    per_genre[g].append(internal_idx)
+            if mlid in meta:
+                for g in meta[mlid]['genres']:
+                    if g in per_genre:
+                        per_genre[g].append(internal_idx)
         cents = []
-        for g in ML_100K_GENRES:
+        for g in ML_GENRES:
             idxs = per_genre[g]
             if len(idxs) > 0:
                 v = item_emb[idxs].mean(axis=0)
@@ -136,7 +181,7 @@ class RecResponse(BaseModel):
 
 @app.get("/genres")
 def get_genres():
-    return ML_100K_GENRES
+    return ML_GENRES
 
 @app.get("/users")
 def get_users():
@@ -196,15 +241,18 @@ def map_intent_to_weights_via_embedding(text: str):
     - No popularity prior
     """
     if not text or item_emb is None or genre_centroids is None:
-        return np.zeros(len(ML_100K_GENRES), dtype=np.float32), 0.0
+        return np.zeros(len(ML_GENRES), dtype=np.float32), 0.0
     qv = embed_text(text)
     if qv is None:
-        return np.zeros(len(ML_100K_GENRES), dtype=np.float32), 0.0
+        return np.zeros(len(ML_GENRES), dtype=np.float32), 0.0
     sims = (genre_centroids @ qv).astype(np.float32)
     sims = np.clip(sims, 0.0, None)
     if sims.sum() > 0:
         sims = sims / sims.sum()
     return sims, 0.0
+
+# Map each affect to genre priors (weights sum <= 1)
+# Updated to work with any genre list
 
 def steer_query_vector(qv: np.ndarray, top_k: int = 3, bottom_k: int = 2, pos_scale: float = 0.8, neg_scale: float = 1.0) -> np.ndarray:
     """
@@ -241,7 +289,7 @@ AFFECT_GENRE_PRIOR = {
     'funny': {'Comedy': 0.9},
     'scary': {'Horror': 0.7, 'Thriller': 0.3},
     'romantic': {'Romance': 0.7, 'Drama': 0.3},
-    'exciting': {'Action': 0.6, 'Thriller': 0.3, 'Adventure': 0.1},
+    'exciting': {'Action': 0.7, 'Thriller': 0.25, 'Adventure': 0.05},  # Boosted Action for exciting
     'inspiring': {'Drama': 0.6, 'Documentary': 0.4},
     'family': {"Children's": 0.6, 'Animation': 0.4},
     'dark': {'Thriller': 0.5, 'Crime': 0.3, 'Film-Noir': 0.2},
@@ -317,7 +365,7 @@ def intent_recommend(
     # Intent mapping (embedding-only) with embedding steering
     qv_raw = embed_text(q)
     if qv_raw is None:
-        genre_weights = np.zeros(len(ML_100K_GENRES), dtype=np.float32)
+        genre_weights = np.zeros(len(ML_GENRES), dtype=np.float32)
         pop_w = 0.0
         qv_use = None
     else:
@@ -327,10 +375,23 @@ def intent_recommend(
         neg_scale = 1.0
         if affect_embs_peek:
             aff_scores = {k: float(np.dot(v, qv_raw / (np.linalg.norm(qv_raw) + 1e-8))) for k, v in affect_embs_peek.items()}
+            # Boost exciting for action-oriented queries
+            action_keywords = ['pumping', 'pump', 'adrenaline', 'heart racing', 'action', 'thrilling', 'awesome']
+            query_lower = q.lower()
+            if any(kw in query_lower for kw in action_keywords) and 'exciting' in aff_scores:
+                exciting_score = aff_scores.get('exciting', 0)
+                scary_score = aff_scores.get('scary', 0)
+                if exciting_score > 0 and scary_score > exciting_score * 0.7:
+                    # Boost exciting for action queries
+                    aff_scores['exciting'] = exciting_score * 1.3
+            
             top_aff = max(aff_scores, key=aff_scores.get)
             if aff_scores[top_aff] > 0:
-                # Stronger pull for high-energy affects
-                if top_aff in ['exciting', 'scary']:
+                # Stronger pull for high-energy affects, prioritize exciting
+                if top_aff == 'exciting':
+                    pos_scale = 1.1  # Strong pull for exciting
+                    neg_scale = 1.0
+                elif top_aff in ['scary']:
                     pos_scale = 1.0
                     neg_scale = 1.0
                 elif top_aff in ['sad', 'romantic']:
@@ -340,13 +401,13 @@ def intent_recommend(
                     pos_scale = 0.9
                     neg_scale = 0.9
         qv_use = steer_query_vector(qv_raw, pos_scale=pos_scale, neg_scale=neg_scale)
-        sims_for_genres = (genre_centroids @ qv_use).astype(np.float32) if genre_centroids is not None else np.zeros(len(ML_100K_GENRES), dtype=np.float32)
+        sims_for_genres = (genre_centroids @ qv_use).astype(np.float32) if genre_centroids is not None else np.zeros(len(ML_GENRES), dtype=np.float32)
         sims_for_genres = np.clip(sims_for_genres, 0.0, None)
 
         # Affect prior
         affect_embs = get_affect_embeddings()
-        g2i = {g: i for i, g in enumerate(ML_100K_GENRES)}
-        affect_weights = np.zeros(len(ML_100K_GENRES), dtype=np.float32)
+        g2i = {g: i for i, g in enumerate(ML_GENRES)}
+        affect_weights = np.zeros(len(ML_GENRES), dtype=np.float32)
         top_affect = None
         affect_conf = 0.0
         if affect_embs:
@@ -355,6 +416,25 @@ def intent_recommend(
             aff_items = [(k, s) for k, s in affect_scores.items() if s > 0]
             total = sum(s for _, s in aff_items)
             if total > 0:
+                # Special handling: if "exciting" and "scary" are both present,
+                # and query contains action-oriented keywords, boost "exciting"
+                exciting_score = affect_scores.get('exciting', 0)
+                scary_score = affect_scores.get('scary', 0)
+                # Check for action-oriented phrases in query
+                action_keywords = ['pumping', 'pump', 'adrenaline', 'heart racing', 'action', 'thrilling', 'awesome']
+                if exciting_score > 0 and scary_score > 0:
+                    query_lower = q.lower()
+                    if any(kw in query_lower for kw in action_keywords):
+                        # Boost exciting when action keywords present
+                        exciting_boost = min(0.15, scary_score * 0.3)
+                        affect_scores['exciting'] = exciting_score + exciting_boost
+                        # Slightly reduce scary if exciting is boosted
+                        if scary_score > exciting_score:
+                            affect_scores['scary'] = scary_score * 0.85
+                        # Recalculate aff_items with boosted scores
+                        aff_items = [(k, s) for k, s in affect_scores.items() if s > 0]
+                        total = sum(s for _, s in aff_items)
+                
                 for k, s in aff_items:
                     prior = AFFECT_GENRE_PRIOR.get(k, {})
                     for g, w in prior.items():
@@ -394,7 +474,7 @@ def intent_recommend(
             candidate_pool = new_pool
         # Log top-3 inferred genres with weights
         _topg = np.argsort(-genre_weights)[:3]
-        logger.info(f"genres_top={[(ML_100K_GENRES[i], float(genre_weights[i])) for i in _topg]}")
+        logger.info(f"genres_top={[(ML_GENRES[i], float(genre_weights[i])) for i in _topg]}")
         pop_w = 0.0
 
     # Early strict filter: keep only items that contain one of top inferred genres

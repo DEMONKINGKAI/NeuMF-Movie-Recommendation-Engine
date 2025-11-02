@@ -10,6 +10,23 @@ ML_100K_GENRES = [
 ]
 
 
+def detect_dataset_format(data_dir):
+    """Detect which MovieLens format is in the directory."""
+    # Check for 100K format
+    if os.path.exists(os.path.join(data_dir, 'ml-100k', 'u.data')):
+        return '100k'
+    # Check for 25M format
+    if os.path.exists(os.path.join(data_dir, 'ml-25m', 'ratings.csv')):
+        return '25m'
+    # Check for 25M in root (if extracted directly)
+    if os.path.exists(os.path.join(data_dir, 'ratings.csv')):
+        return '25m'
+    # Fallback: check if ml-100k directory exists
+    if os.path.exists(os.path.join(data_dir, 'ml-100k')):
+        return '100k'
+    raise ValueError(f"Could not detect dataset format in {data_dir}. Expected either ml-100k/ or ml-25m/ or ratings.csv")
+
+
 def load_movielens_100k(data_dir, min_rating=4):
     """
     Load MovieLens 100K ratings and item genre info.
@@ -31,6 +48,76 @@ def load_movielens_100k(data_dir, min_rating=4):
             genres.append((iid, gvec))
     item_genres = {iid: gvec for (iid, gvec) in genres}
     return ratings_df, item_genres
+
+
+def load_movielens_25m(data_dir, min_rating=4, max_ratings=None):
+    """
+    Load MovieLens 25M ratings and item genre info.
+    Returns:
+        ratings_df: userId, itemId, rating, timestamp (original IDs)
+        item_genres: dict {itemId (orig): list of genre strings}
+        all_genres: sorted list of all unique genres found
+    """
+    # Try ml-25m subdirectory first, then root
+    ratings_path = os.path.join(data_dir, 'ml-25m', 'ratings.csv')
+    movies_path = os.path.join(data_dir, 'ml-25m', 'movies.csv')
+    
+    if not os.path.exists(ratings_path):
+        ratings_path = os.path.join(data_dir, 'ratings.csv')
+        movies_path = os.path.join(data_dir, 'movies.csv')
+    
+    print(f"Loading ratings from {ratings_path}...")
+    ratings_df = pd.read_csv(ratings_path)
+    # Rename columns to match expected format
+    ratings_df = ratings_df.rename(columns={'userId': 'userId', 'movieId': 'itemId', 'rating': 'rating', 'timestamp': 'timestamp'})
+    ratings_df = ratings_df[ratings_df['rating'] >= min_rating]
+    
+    # Optionally limit number of ratings for faster processing
+    if max_ratings and len(ratings_df) > max_ratings:
+        print(f"Sampling {max_ratings} ratings from {len(ratings_df)} total ratings...")
+        ratings_df = ratings_df.sample(n=max_ratings, random_state=42).reset_index(drop=True)
+    
+    print(f"Loading movies from {movies_path}...")
+    movies_df = pd.read_csv(movies_path)
+    
+    # Parse genres (pipe-separated)
+    item_genres = {}
+    all_genres_set = set()
+    
+    for _, row in movies_df.iterrows():
+        movie_id = int(row['movieId'])
+        # Genres are pipe-separated, e.g., "Action|Adventure|Sci-Fi" or "(no genres listed)"
+        genre_str = str(row['genres']).strip()
+        if genre_str == '(no genres listed)' or genre_str == 'nan' or pd.isna(genre_str):
+            genres_list = []
+        else:
+            genres_list = [g.strip() for g in genre_str.split('|') if g.strip()]
+        item_genres[movie_id] = genres_list
+        all_genres_set.update(genres_list)
+    
+    all_genres = sorted(list(all_genres_set))
+    print(f"Found {len(all_genres)} unique genres: {', '.join(all_genres[:10])}{'...' if len(all_genres) > 10 else ''}")
+    
+    return ratings_df, item_genres, all_genres
+
+
+def create_genre_matrix_from_lists(item_genres_dict, iid_map, genre_list):
+    """
+    Create genre matrix from list-based genre dict (for 25M format).
+    Returns: matrix shape (num_items, num_genres) with multi-hot encoding
+    """
+    num_items = len(iid_map)
+    num_genres = len(genre_list)
+    genre_to_idx = {g: i for i, g in enumerate(genre_list)}
+    mat = np.zeros((num_items, num_genres), dtype=np.float32)
+    
+    for orig_iid, idx in iid_map.items():
+        if orig_iid in item_genres_dict:
+            genres = item_genres_dict[orig_iid]
+            for genre in genres:
+                if genre in genre_to_idx:
+                    mat[idx, genre_to_idx[genre]] = 1.0
+    return mat
 
 
 def build_id_maps(ratings_df):
@@ -106,15 +193,32 @@ def negative_sampling(pos_inter, num_users, num_items, num_neg_per=4, exclude_se
     return np.stack([neg_users, neg_items], axis=1)
 
 
-def build_dataset(data_dir, min_rating=4, neg_per_pos=4, seed=42):
+def build_dataset(data_dir, min_rating=4, neg_per_pos=4, seed=42, max_ratings=None):
     """
-    Loads MovieLens, builds mappings, genre matrix, splits, negative samples for train.
-    Returns: dict with train/val/test, mappings, genre matrix
+    Loads MovieLens (detects format automatically), builds mappings, genre matrix, splits, negative samples for train.
+    Returns: dict with train/val/test, mappings, genre matrix, genre_list
     """
-    ratings_df, item_genres = load_movielens_100k(data_dir, min_rating)
+    dataset_format = detect_dataset_format(data_dir)
+    
+    if dataset_format == '100k':
+        ratings_df, item_genres = load_movielens_100k(data_dir, min_rating)
+        all_genres = ML_100K_GENRES
+        item_genres_dict = item_genres  # Already in multi-hot format
+    else:  # 25m
+        ratings_df, item_genres_dict, all_genres = load_movielens_25m(data_dir, min_rating, max_ratings)
+    
+    print(f"Dataset format: {dataset_format}")
+    print(f"Loaded {len(ratings_df)} ratings from {ratings_df['userId'].nunique()} users and {ratings_df['itemId'].nunique()} items")
+    
     uid_map, iid_map, num_users, num_items = build_id_maps(ratings_df)
     inter = build_interactions(ratings_df, uid_map, iid_map)
-    genre_mat = create_genre_matrix(item_genres, iid_map)
+    
+    # Create genre matrix based on format
+    if dataset_format == '100k':
+        genre_mat = create_genre_matrix(item_genres, iid_map)
+    else:  # 25m
+        genre_mat = create_genre_matrix_from_lists(item_genres_dict, iid_map, all_genres)
+    
     splits = leave_one_out_split(inter)
     # Train: sample negatives
     train_pos = splits['train']
@@ -128,6 +232,8 @@ def build_dataset(data_dir, min_rating=4, neg_per_pos=4, seed=42):
         'iid_map': iid_map,
         'num_users': num_users,
         'num_items': num_items,
-        'genre_mat': genre_mat
+        'genre_mat': genre_mat,
+        'genre_list': all_genres,  # List of all genres (for API)
+        'dataset_format': dataset_format
     }
     return data
