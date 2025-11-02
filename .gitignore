@@ -12,12 +12,18 @@ venv/
 ENV/
 env/
 
-# PyTorch
+# PyTorch model checkpoints (too large for git)
 *.pt
 *.pth
+checkpoints/*.pt
+checkpoints/*.pth
 
-# NumPy arrays (embeddings)
+# NumPy arrays (embeddings - too large for git)
 *.npy
+checkpoints/*.npy
+
+# Item embeddings specifically
+checkpoints/item_embeddings.npy
 
 # IDE
 .vscode/
@@ -30,28 +36,25 @@ env/
 .DS_Store
 Thumbs.db
 
-# Data - only exclude non-essential files
-# Essential files to KEEP:
-#   ml-100k/u.data, ml-100k/u.item
-#   ml-25m/ratings.csv, ml-25m/movies.csv
-
-# MovieLens 100K - exclude non-essential files
-data/ml-100k/**/u*.base
-data/ml-100k/**/u*.test
-data/ml-100k/**/u.user
-data/ml-100k/**/u.genre
-data/ml-100k/**/u.occupation
-data/ml-100k/**/u.info
-data/ml-100k/**/README
-data/ml-100k/**/allbut.pl
-data/ml-100k/**/mku.sh
-
-# MovieLens 25M - exclude non-essential files
-data/ml-25m/**/genome-scores.csv
-data/ml-25m/**/genome-tags.csv
-data/ml-25m/**/links.csv
-data/ml-25m/**/tags.csv
-data/ml-25m/**/README.txt
+# Data folder - ALL data files excluded (too large for git)
+# Users must download datasets using scripts/download_mlwk.py
+data/ml-100k/
+data/ml-25m/
+data/**/*.csv
+data/**/*.data
+data/**/*.item
+data/**/*.base
+data/**/*.test
+data/**/*.user
+data/**/*.genre
+data/**/*.occupation
+data/**/*.info
+data/**/README*
+data/**/*.pl
+data/**/*.sh
+data/**/genome-*.csv
+data/**/links.csv
+data/**/tags.csv
 
 # Logs
 *.log
